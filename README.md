@@ -84,8 +84,23 @@ cookie is same-origin in development.
 npm test
 ```
 
-Covers timezone boundaries, future-date rejection, DST transitions, gap handling,
-and the today-vs-yesterday rule.
+12 tests over `localDay.js`: timezone boundaries (one UTC instant is Aug 24 in
+Kolkata and Aug 23 in New York), future-date rejection per timezone, DST
+transitions, gap handling, the today-vs-yesterday rule, and empty history.
+
+Two of them are worth calling out because they guard things the others don't:
+
+- **`parseLocalDay` anchors to a DST-free zone.** Luxon's `diff(…, 'days')` is
+  calendar-aware and returns `1` across a spring-forward boundary in *any* zone,
+  so the plain DST test passes with or without the UTC anchor. This test asserts
+  the stronger property the anchor actually buys — the two instants are a flat 24
+  hours apart, so even naive millisecond arithmetic is exactly one day. Swap
+  `{ zone: 'utc' }` for a DST-observing zone and this test fails; the others
+  don't notice.
+- **Results don't depend on the process timezone.** Re-runs the module under
+  `TZ=Pacific/Kiritimati` (UTC+14) and `TZ=Pacific/Niue` (UTC−11) and asserts
+  byte-identical output. Every function takes its zone explicitly, and this stops
+  the machine's own `TZ` from ever leaking in.
 
 ### Migrations
 
@@ -140,9 +155,13 @@ backfills, and deliberately never used in streak math.
 
 ## Notes and trade-offs
 
-- Timezone is set at registration, matching the spec's "assigned IANA timezone".
-  Changing it later would keep all stored `localDay` values as-is: they record
-  the day the user *was* living in, which is the honest interpretation.
+- Timezone is set at registration, matching the spec's "assigned IANA timezone",
+  and there is deliberately **no endpoint to change it** — the spec doesn't ask
+  for one. If one were added, stored `localDay` values should stay as-is: they
+  record the day the user *was* living in, which is the honest interpretation.
+  The visible consequence is that a user's past check-ins never move, but the
+  live/stale boundary of their current streak is re-evaluated against their new
+  local today.
 - The dashboard sends `recentDays` (last 60 days) per habit so the heatmap
   renders without extra round-trips. At much larger scale this would page.
 - Streaks are computed on read rather than cached. Correct by construction, and

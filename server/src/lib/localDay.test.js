@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DateTime } from 'luxon';
 import {
   todayLocalDay, resolveCheckInDay, computeStreaks, addDays, isValidTimezone,
+  parseLocalDay, daysBetween,
 } from './localDay.js';
 
 const at = (iso) => DateTime.fromISO(iso, { zone: 'utc' });
@@ -57,6 +60,49 @@ test('DST transition does not break a streak', () => {
   const now = at('2026-03-09T17:00:00Z');
   const s = computeStreaks(['2026-03-07','2026-03-08','2026-03-09'], 'America/New_York', now);
   assert.deepEqual(s, { currentStreak: 3, longestStreak: 3 });
+});
+
+test('parseLocalDay anchors to a DST-free zone', () => {
+  // Luxon's diff(..., 'days') is calendar-aware and would return 1 in any zone,
+  // so the test above passes with or without the UTC anchor. This asserts the
+  // stronger property the anchor actually buys: the two instants are a flat
+  // 24 hours apart across a spring-forward boundary, so even plain millisecond
+  // arithmetic is exactly one day. That is what stops a future rewrite of
+  // daysBetween from silently breaking one day a year.
+  const a = parseLocalDay('2026-03-08'); // US spring-forward
+  const b = parseLocalDay('2026-03-09');
+  assert.equal(a.offset, b.offset);
+  assert.equal((b.toMillis() - a.toMillis()) / 86_400_000, 1);
+  assert.equal(daysBetween('2026-03-08', '2026-03-09'), 1);
+});
+
+test('results do not depend on the process timezone', () => {
+  // Every function takes its zone explicitly, so the machine's own TZ must not
+  // leak in. Checked at the extremes of the offset range (UTC+14 and UTC-11).
+  const mod = fileURLToPath(new URL('./localDay.js', import.meta.url));
+  const probe = `
+    const { todayLocalDay, computeStreaks, resolveCheckInDay, daysBetween } =
+      await import(${JSON.stringify(mod)});
+    const { DateTime } = await import('luxon');
+    const now = DateTime.fromISO('2026-08-23T19:00:00Z', { zone: 'utc' });
+    console.log(JSON.stringify([
+      todayLocalDay('Asia/Kolkata', now),
+      todayLocalDay('America/New_York', now),
+      resolveCheckInDay('2026-08-24', 'America/New_York', now).ok,
+      computeStreaks(['2026-03-07','2026-03-08','2026-03-09'], 'America/New_York', now),
+      daysBetween('2026-02-28', '2026-03-01'),
+    ]));
+  `;
+  const run = (tz) =>
+    execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      env: { ...process.env, TZ: tz },
+      encoding: 'utf8',
+    }).trim();
+
+  const expected = run('UTC');
+  for (const tz of ['Pacific/Kiritimati', 'Pacific/Niue', 'America/New_York']) {
+    assert.equal(run(tz), expected, `output differs under TZ=${tz}`);
+  }
 });
 
 test('empty history', () => {
